@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { APP_THEME } from '../constants';
 import { UserProfile } from '../types';
-import { School, User, Save, GraduationCap, BookOpen, Calculator } from 'lucide-react';
+import { School, User, Save, GraduationCap, BookOpen, Calculator, MessageSquarePlus } from 'lucide-react';
 
 interface ProfileViewProps {
   profile: UserProfile;
@@ -141,7 +141,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ profile, onUpdateProfi
           </div>
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex justify-end pt-4">
           <button
             type="submit"
             className={`${tokens.primary} px-8 py-3 rounded-xl font-medium flex items-center gap-2 shadow-lg hover:shadow-xl transition-all active:scale-95`}
@@ -151,6 +151,25 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ profile, onUpdateProfi
           </button>
         </div>
       </form>
+
+      <div className="mt-12 bg-white border border-slate-200 rounded-3xl p-8 text-center shadow-sm">
+        <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+          <MessageSquarePlus size={24} />
+        </div>
+        <h3 className="text-xl font-bold text-slate-900 mb-2">改善のご提案</h3>
+        <p className="text-slate-500 mb-6 max-w-md mx-auto">
+          SyncStudyをより使いやすくするために、皆様からのご意見をお待ちしております。不具合の報告や新機能の要望など、お気軽にお寄せください。
+        </p>
+        <a 
+          href="https://docs.google.com/forms/d/e/1FAIpQLSeXns8QeyCdEooK4RrY7_NkfbyZOCqKQVpwe1D7xybem1MMtg/viewform?usp=publish-editor"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-slate-900 text-white font-bold rounded-2xl hover:bg-slate-800 transition-all shadow-md hover:shadow-lg active:scale-95"
+        >
+          改善点を報告する
+          <MessageSquarePlus size={18} />
+        </a>
+      </div>
     </div>
   );
 };

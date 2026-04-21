@@ -4,6 +4,7 @@ import { ViewState } from '../types';
 import { 
   LayoutDashboard, 
   MessageSquareText, 
+  MessageSquarePlus,
   FileCheck, // Changed icon for Test
   User, // New icon for Profile
   GraduationCap
@@ -57,6 +58,17 @@ export const Layout: React.FC<LayoutProps> = ({ currentView, onNavigate, childre
           })}
         </nav>
 
+        <div className="mt-auto pt-6 border-t border-slate-100">
+          <a
+            href="https://docs.google.com/forms/d/e/1FAIpQLSeXns8QeyCdEooK4RrY7_NkfbyZOCqKQVpwe1D7xybem1MMtg/viewform?usp=publish-editor"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 px-4 py-3 rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-all duration-200 group"
+          >
+            <MessageSquarePlus size={20} className="text-slate-400 group-hover:text-slate-900" />
+            <span className="font-medium text-sm">改善点を報告</span>
+          </a>
+        </div>
       </aside>
 
       {/* Mobile Header */}
@@ -67,6 +79,15 @@ export const Layout: React.FC<LayoutProps> = ({ currentView, onNavigate, childre
           </div>
           <span className="font-bold text-lg">SyncStudy</span>
         </div>
+        <a
+          href="https://docs.google.com/forms/d/e/1FAIpQLSeXns8QeyCdEooK4RrY7_NkfbyZOCqKQVpwe1D7xybem1MMtg/viewform?usp=publish-editor"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-indigo-600 font-medium text-xs flex items-center gap-1 bg-indigo-50 px-3 py-1.5 rounded-full"
+        >
+          <MessageSquarePlus size={14} />
+          改善報告
+        </a>
       </header>
 
       {/* Main Content */}
