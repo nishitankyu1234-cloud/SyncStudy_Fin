@@ -1,7 +1,7 @@
-import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { TestQuestion, UserProfile } from "../types";
 
-// --- APIキーの状態管理（サーキットブレーカー） ---
+// --- APIキーの状態管理 ---
 interface ApiKeyStatus {
   key: string;
   isBroken: boolean;
@@ -16,19 +16,17 @@ const getApiKeys = (): ApiKeyStatus[] => {
       isBroken: false,
       lastFailureTime: 0
     }));
-  return keys.length > 0 ? keys : [];
+  // 万が一1つも取れなかった時のための最終防衛ライン
+  return keys.length > 0 ? keys : [{ key: import.meta.env.VITE_GEMINI_API_KEY_1 || '', isBroken: false, lastFailureTime: 0 }];
 };
 
 const API_POOL = getApiKeys();
 const COOL_DOWN_MS = 1000 * 60 * 5; 
 
-// モデル設定：思考機能(Thinking)と検索が使える最新モデルを指定
-const MODEL_THINKING = 'gemini-2.0-flash-thinking-exp-01-21'; 
-const MODEL_FLASH = 'gemini-2.0-flash'; // 問題生成用（速さ重視）
+// モデルは現在最も安定している「1.5 Flash」に固定します。
+// 2.0系やThinking機能は、これが動いてから戻しましょう。
+const STABLE_MODEL = 'gemini-1.5-flash';
 
-/**
- * 正常なAPIキーを選択
- */
 const getActiveAiInstance = () => {
   const now = Date.now();
   API_POOL.forEach(s => {
@@ -40,45 +38,22 @@ const getActiveAiInstance = () => {
     ? availableKeys[Math.floor(Math.random() * availableKeys.length)]
     : API_POOL.sort((a, b) => a.lastFailureTime - b.lastFailureTime)[0];
 
-  if (!selectedStatus) throw new Error("APIキーが未設定です");
-
   return {
-    genAI: new GoogleGenAI(selectedStatus.key),
+    // 成功したコードと同じ「new GoogleGenAI({ apiKey: ... })」の形にします
+    ai: new GoogleGenAI({ apiKey: selectedStatus.key }),
     markAsBroken: () => {
       selectedStatus.isBroken = true;
       selectedStatus.lastFailureTime = Date.now();
-      console.warn("APIキーを一時除外しました");
     }
   };
 };
 
-/**
- * 講師プロンプト生成（1つ目の詳細な指示を継承）
- */
 const generateSystemInstruction = (userProfile?: UserProfile): string => {
-  let instruction = `あなたは日本トップクラスの予備校講師です。
-【指導方針】
-1. 最高品質の解説：論理的かつ構造的に回答してください。
-2. 誤字脱字の徹底排除。
-3. 誘導的指導：ソクラテス式問答法を用いて生徒自身が気付けるようにしてください。
-4. 共通テスト・難関大対応：思考力・判断力を養う「使える知識」を伝授してください。
-【ハルシネーション防止】
-最新の入試情報や事実はGoogle検索を行い、正確性を担保してください。`;
-
-  if (userProfile) {
-    if (userProfile.targetUniversity) {
-      instruction += `\n第一志望：${userProfile.targetUniversity}。「${userProfile.targetUniversity}の入試ではここが合否を分ける」といった助言を盛り込んでください。`;
-    }
-    if (userProfile.major) {
-      const isArts = userProfile.major === 'arts';
-      instruction += `\n属性：${isArts ? '文系' : '理系'}。${isArts ? 'イメージや比喩を用いて直感的に' : '論理の飛躍がないよう厳密に'}解説してください。`;
-    }
-  }
-  return instruction;
+  return `あなたは予備校講師です。${userProfile?.targetUniversity ? `志望校は${userProfile.targetUniversity}です。` : ''}親身に教えてください。`;
 };
 
 /**
- * チャットストリーム（Thinking ＆ Google検索 有効化）
+ * チャットストリーム：成功したコードの構造を完全再現
  */
 export const createChatStream = async function* (
   history: any[],
@@ -86,67 +61,66 @@ export const createChatStream = async function* (
   imageDataUrl?: string,
   userProfile?: UserProfile
 ) {
-  const maxRetries = Math.max(API_POOL.length, 2);
-  let lastError: any;
+  const { ai, markAsBroken } = getActiveAiInstance();
+  
+  try {
+    // 成功したコードと同じ「ai.chats.create」を使います
+    const chat = ai.chats.create({
+      model: STABLE_MODEL,
+      history: history,
+      config: { systemInstruction: generateSystemInstruction(userProfile) }
+    });
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const { genAI, markAsBroken } = getActiveAiInstance();
-    let yielded = false;
-    try {
-      const model = genAI.getGenerativeModel({
-        model: MODEL_THINKING,
-        systemInstruction: generateSystemInstruction(userProfile),
-        // 1つ目のコードの強み「Google検索」を有効化
-        tools: [{ googleSearch: {} }] as any, 
-      });
-
-      const chat = model.startChat({
-        history: history,
-        generationConfig: {
-          // 思考レベルを設定
-          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-          maxOutputTokens: 4000
-        }
-      });
-
-      let content: any = newMessage;
-      if (imageDataUrl) {
-        const [header, base64Data] = imageDataUrl.split(',');
-        const mimeType = header.match(/:(.*?);/)?.[1] || 'image/jpeg';
-        content = [{ text: newMessage || "解説してください" }, { inlineData: { mimeType, data: base64Data } }];
-      }
-
-      const result = await chat.sendMessageStream(content);
-
-      for await (const chunk of result.stream) {
-        yielded = true;
-        yield chunk.text();
-      }
-      return; 
-    } catch (error) {
-      if (yielded) throw error; 
-      markAsBroken();
-      lastError = error;
-      await new Promise(r => setTimeout(r, 1000));
+    let messageContent: any = newMessage;
+    if (imageDataUrl) {
+      const [header, base64Data] = imageDataUrl.split(',');
+      const mimeType = header.match(/:(.*?);/)?.[1] || 'image/jpeg';
+      messageContent = [
+        { text: newMessage || "解説してください" },
+        { inlineData: { mimeType, data: base64Data } }
+      ];
     }
+
+    const result = await chat.sendMessageStream({ message: messageContent });
+
+    for await (const chunk of result) {
+      yield chunk.text;
+    }
+  } catch (error) {
+    markAsBroken();
+    console.error("Chat Error:", error);
+    throw error;
   }
-  throw lastError;
 };
 
 /**
- * テスト問題生成（2つ目の安定版を継承）
+ * 問題生成：成功したコードの構造を完全再現
  */
-export const generateTestQuestions = async (topic: string, userProfile?: UserProfile, count: number = 3, difficulty: string = 'intermediate'): Promise<TestQuestion[]> => {
-  const { genAI, markAsBroken } = getActiveAiInstance();
+export const generateTestQuestions = async (topic: string, userProfile?: UserProfile): Promise<TestQuestion[]> => {
+  const { ai, markAsBroken } = getActiveAiInstance();
   try {
-    const model = genAI.getGenerativeModel({
-      model: MODEL_FLASH,
-      generationConfig: { responseMimeType: "application/json" }
+    const prompt = `「${topic}」の4択問題を3問、JSON形式で作成してください。`;
+    const response = await ai.models.generateContent({
+      model: STABLE_MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              question: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+              correctAnswerIndex: { type: Type.INTEGER },
+              explanation: { type: Type.STRING }
+            },
+            required: ["question", "options", "correctAnswerIndex", "explanation"]
+          }
+        }
+      }
     });
-
-    const prompt = `「${topic}」の4択問題を${count}問作成。JSON形式で。`;
-    const result = await model.generateContent(prompt);
-    return JSON.parse(result.response.text()) as TestQuestion[];
+    return JSON.parse(response.text) as TestQuestion[];
   } catch (error) {
     markAsBroken();
     throw error;
