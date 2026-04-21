@@ -1,0 +1,7 @@
+{
+  "name": "Remix: Copy of Copy of 最強102",
+  "description": "A modern, minimalist study companion for high school students featuring AI tutoring, adaptive quizzes, and focus tools.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
