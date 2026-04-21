@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/genai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { TestQuestion, UserProfile } from "../types";
 
 // --- APIキーの状態管理（サーキットブレーカー） ---
