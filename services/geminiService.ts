@@ -1,19 +1,16 @@
-import { GoogleGenAI, SchemaType } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { TestQuestion, UserProfile } from "../types";
 
-// --- 1. APIキーの取得 (Vite/Vercel用) ---
-// VITE_GEMINI_API_KEY_1 があればそれ、なければ VITE_GEMINI_API_KEY を使います
+// --- 1. APIキーの取得 ---
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY_1 || import.meta.env.VITE_GEMINI_API_KEY || "";
 
-// --- 2. SDKの初期化 (エラーが出ていた部分を修正) ---
-// new GoogleGenAI({ apiKey: ... }) ではなく、直接文字列を渡すのが最新の正解です
+// --- 2. SDKの初期化 ---
 const genAI = new GoogleGenAI(API_KEY);
 
-// モデルの指定（安定している 1.5 Flash を使用）
 const MODEL_NAME = "gemini-1.5-flash";
 
 /**
- * 講師のキャラクター設定（システムプロンプト）
+ * 講師のキャラクター設定
  */
 const getSystemInstruction = (userProfile?: UserProfile): string => {
   let instruction = `あなたは日本トップクラスの予備校講師です。
@@ -36,7 +33,7 @@ export const createChatStream = async function* (
   imageDataUrl?: string,
   userProfile?: UserProfile
 ) {
-  if (!API_KEY) throw new Error("APIキーが設定されていません。VercelのEnvironment Variablesを確認してください。");
+  if (!API_KEY) throw new Error("APIキーが設定されていません。");
 
   try {
     const model = genAI.getGenerativeModel({
@@ -47,7 +44,7 @@ export const createChatStream = async function* (
     const chat = model.startChat({
       history: history.map(h => ({
         role: h.role === 'user' ? 'user' : 'model',
-        parts: h.parts.map((p: any) => ({ text: p.text }))
+        parts: [{ text: h.parts?.[0]?.text || "" }]
       })),
     });
 
@@ -73,7 +70,7 @@ export const createChatStream = async function* (
 };
 
 /**
- * 問題作成機能
+ * 問題作成機能 (SchemaType を Type に修正)
  */
 export const generateTestQuestions = async (topic: string, userProfile?: UserProfile): Promise<TestQuestion[]> => {
   try {
@@ -82,14 +79,14 @@ export const generateTestQuestions = async (topic: string, userProfile?: UserPro
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
-          type: SchemaType.ARRAY,
+          type: Type.ARRAY,
           items: {
-            type: SchemaType.OBJECT,
+            type: Type.OBJECT,
             properties: {
-              question: { type: SchemaType.STRING },
-              options: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-              correctAnswerIndex: { type: SchemaType.INTEGER },
-              explanation: { type: SchemaType.STRING }
+              question: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+              correctAnswerIndex: { type: Type.INTEGER },
+              explanation: { type: Type.STRING }
             },
             required: ["question", "options", "correctAnswerIndex", "explanation"]
           }
@@ -99,8 +96,7 @@ export const generateTestQuestions = async (topic: string, userProfile?: UserPro
 
     const prompt = `「${topic}」に関する4択問題を3問作成してください。`;
     const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    return JSON.parse(text) as TestQuestion[];
+    return JSON.parse(result.response.text()) as TestQuestion[];
   } catch (error) {
     console.error("Test Generation Error:", error);
     throw error;
