@@ -1,166 +1,167 @@
-import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { TestQuestion, UserProfile } from "../types";
 
-// --- APIキーの状態管理（サーキットブレーカー） ---
-interface ApiKeyStatus {
-  key: string;
-  isBroken: boolean;
-  lastFailureTime: number;
-}
+// Initialize the client
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const getApiKeys = (): ApiKeyStatus[] => {
-  const keys = Object.entries(import.meta.env)
-    .filter(([key, value]) => key.startsWith('VITE_GEMINI_API_KEY_') && value)
-    .map(([_, value]) => ({
-      key: value as string,
-      isBroken: false,
-      lastFailureTime: 0
-    }));
-  
-  // フォールバック
-  if (keys.length === 0 && import.meta.env.VITE_GEMINI_API_KEY_1) {
-    keys.push({ key: import.meta.env.VITE_GEMINI_API_KEY_1, isBroken: false, lastFailureTime: 0 });
-  }
-  return keys;
-};
-
-const API_POOL = getApiKeys();
-const COOL_DOWN_MS = 1000 * 60 * 5; 
-const MODEL_NAME = 'gemini-1.5-flash'; // 2024年現在の安定版。3-flash-previewが存在しない場合はこちらを推奨
+const MODEL_TEXT = 'gemini-3-flash-preview';
+const MODEL_FLASH = 'gemini-3-flash-preview';
 
 /**
- * 有効なAPIキーからモデルインスタンスを生成して返す
- */
-const getActiveModel = (systemInstruction: string) => {
-  const now = Date.now();
-  
-  // 復旧チェック
-  API_POOL.forEach(s => {
-    if (s.isBroken && now - s.lastFailureTime > COOL_DOWN_MS) {
-      s.isBroken = false;
-    }
-  });
-
-  const availableKeys = API_POOL.filter(s => !s.isBroken);
-  const selectedStatus = availableKeys.length > 0 
-    ? availableKeys[Math.floor(Math.random() * availableKeys.length)]
-    : API_POOL.sort((a, b) => a.lastFailureTime - b.lastFailureTime)[0];
-
-  const genAI = new GoogleGenerativeAI(selectedStatus.key);
-  const model = genAI.getGenerativeModel({
-    model: MODEL_NAME,
-    systemInstruction: systemInstruction,
-  });
-
-  return {
-    model,
-    markAsBroken: () => {
-      selectedStatus.isBroken = true;
-      selectedStatus.lastFailureTime = Date.now();
-      console.warn(`API Key broken. Remaining: ${API_POOL.filter(k => !k.isBroken).length}`);
-    }
-  };
-};
-
-/**
- * プロンプト生成（予備校講師）
- */
-const generateSystemInstruction = (userProfile?: UserProfile): string => {
-  let instruction = `あなたは日本トップクラスの予備校講師です。以下の指針に従って生徒を指導してください。
-【指導方針】
-1. 最高品質の解説: 本質を突いた平易な言葉で説明。
-2. 誤字脱字排除。
-3. 誘導的指導: ソクラテス式問答法。
-4. 共通テスト対応: 思考力・判断力を養う。
-【トーン】温かみのある「です・ます」調。`;
-
-  if (userProfile) {
-    if (userProfile.targetUniversity) {
-      instruction += `\n第一志望：${userProfile.targetUniversity}。この大学の入試傾向を踏まえた指導をしてください。`;
-    }
-    if (userProfile.major) {
-      instruction += `\n生徒は${userProfile.major === 'arts' ? '文系' : '理系'}です。`;
-    }
-  }
-  return instruction;
-};
-
-/**
- * チャットストリーム生成
+ * Creates a chat session and returns a streaming response generator
+ * Supports text and optional image input with retry logic
  */
 export const createChatStream = async function* (
-  history: any[],
+  history: { role: 'user' | 'model'; parts: { text?: string; inlineData?: any }[] }[],
   newMessage: string,
   imageDataUrl?: string,
   userProfile?: UserProfile
 ) {
-  const maxRetries = Math.max(API_POOL.length, 2);
+  const maxRetries = 2;
   let lastError: any;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const systemInstruction = generateSystemInstruction(userProfile);
-    const { model, markAsBroken } = getActiveModel(systemInstruction);
     let yielded = false;
-
     try {
-      const chat = model.startChat({ history });
+      let systemInstruction = `
+あなたは日本トップクラスの予備校講師です。以下の指針に従って生徒を指導してください。
 
-      let messageParts: any[] = [{ text: newMessage }];
+【指導方針】
+1. **最高品質の解説**: 難解な概念も、本質を突いた平易な言葉で説明し、論理的かつ構造的に回答してください。
+2. **誤字脱字の徹底排除**: 生成されたテキストは送信前に必ず校正し、誤字脱字や不自然な日本語がないようにしてください。
+3. **誘導的指導**: すぐに答えを教えるのではなく、ソクラテス式問答法を用いて生徒自身が気付けるように誘導してください。
+4. **共通テスト・難関大対応**: 共通テストの傾向（思考力・判断力・表現力）を意識し、単なる暗記ではない「使える知識」を授けてください。
+
+【ハルシネーション防止とファクトチェック】
+1. **根拠に基づく回答**: 推測や不確かな情報ではなく、常に信頼できる事実に基づいた回答をしてください。
+2. **ファクトチェックの徹底**: 回答を生成する前に、必ず事実関係を確認してください。特に歴史的事実、科学的データ、公式な入試情報については、最新の信頼できるソース（Google検索など）を参照し、正確性を担保してください。
+3. **不確実性の明示**: 情報が不足している場合や、複数の説がある場合は、その旨を正直に伝え、断定的な表現を避けてください。
+4. **プログラム実行前の検証**: 数学の解法やプログラムコードを提示する際は、実行前に論理的な矛盾がないか、期待通りの動作をするかをステップバイステップで検証してください。
+
+【トーン＆マナー】
+*   自信に満ち、頼りがいがあるが、威圧的ではない。
+*   生徒のモチベーションを高める、温かみのある「です・ます」調。
+*   重要なポイントは箇条書きや太字を適切に使用して視認性を高める。
+`;
+
+      if (userProfile) {
+        if (userProfile.targetUniversity) {
+          systemInstruction += `\n\n【生徒の目標】\n第一志望：${userProfile.targetUniversity}\n${userProfile.targetUniversity}の入試傾向（過去問の特徴、頻出分野、記述の有無など）を熟知したプロフェッショナルとして振る舞ってください。「${userProfile.targetUniversity}ではここが合否を分けます」といった具体的なアドバイスを随所に盛り込んでください。`;
+        }
+
+        if (userProfile.major) {
+          const majorText = userProfile.major === 'arts' ? '文系' : userProfile.major === 'science' ? '理系' : '';
+          if (majorText) {
+            systemInstruction += `\n\n【生徒の属性】\nこの生徒は「${majorText}」です。解説のアプローチを最適化してください。\n`;
+            if (userProfile.major === 'arts') {
+              systemInstruction += `・数学や理科の質問には、数式だけでなく、具体的なイメージや歴史的背景、言語的な比喩を用いて直感的に理解できるよう工夫してください。\n・国語や社会の質問には、背景知識を豊かに広げ、記述力向上につながる指導を意識してください。`;
+            } else {
+              systemInstruction += `・数学や理科の質問には、論理の飛躍がないよう厳密さを大切にしつつ、応用問題への展開を示唆してください。\n・国語や社会の質問には、論理的構造（因果関係、対比など）を明確にし、効率的に知識を整理できるよう指導してください。`;
+            }
+          }
+        }
+      }
+
+      const chat = ai.chats.create({
+        model: MODEL_TEXT,
+        history: history,
+        config: {
+          systemInstruction: systemInstruction,
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
+        }
+      });
+
+      let messageContent: any = newMessage;
+
       if (imageDataUrl) {
         const [header, base64Data] = imageDataUrl.split(',');
         const mimeType = header.match(/:(.*?);/)?.[1] || 'image/jpeg';
-        messageParts = [
-          { text: newMessage || "この画像を解説してください。" },
-          { inlineData: { mimeType, data: base64Data } }
+
+        messageContent = [
+          { text: newMessage || "この画像について、入試問題としての視点から詳しく解説してください。" },
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: base64Data
+            }
+          }
         ];
       }
 
-      const result = await chat.sendMessageStream(messageParts);
+      const result = await chat.sendMessageStream({ message: messageContent });
 
-      for await (const chunk of result.stream) {
+      for await (const chunk of result) {
         yielded = true;
-        yield chunk.text();
+        yield chunk.text;
       }
-      return;
+      return; // Success
     } catch (error) {
-      if (yielded) throw error;
-      markAsBroken();
+      if (yielded) throw error; // Don't retry if we already started yielding content
+      
+      console.error(`Chat attempt ${attempt + 1} failed:`, error);
       lastError = error;
-      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
     }
   }
-  throw lastError;
+  throw lastError || new Error("Chat stream failed after multiple attempts");
 };
 
 /**
- * テスト問題生成 (Structured Output版)
+ * Generates test questions based on a topic, difficulty, and optional target university
+ * Includes retry logic for better reliability
  */
 export const generateTestQuestions = async (topic: string, userProfile?: UserProfile, count: number = 3, difficulty: string = 'intermediate'): Promise<TestQuestion[]> => {
-  const maxRetries = Math.max(API_POOL.length, 2);
+  const maxRetries = 2;
   let lastError: any;
 
-  const difficultyText = difficulty === 'advanced' ? '難関大レベル' : '標準レベル';
+  const difficultyMap: Record<string, string> = {
+    'beginner': '基礎・基本レベル（教科書レベル）',
+    'intermediate': '標準・共通テストレベル',
+    'advanced': '応用・難関大入試レベル'
+  };
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const systemMsg = "あなたは予備校講師です。高品質な4択問題をJSONで作成してください。";
-    const { model, markAsBroken } = getActiveModel(systemMsg);
-
     try {
-      const prompt = `${topic}について、${difficultyText}の問題を${count}問作成してください。`;
+      let prompt = `「${topic}」に関する${difficultyMap[difficulty] || '標準'}の4択問題を作成してください。（全${count}問）`;
       
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
+      if (userProfile) {
+        if (userProfile.targetUniversity) {
+          prompt += `\n\n【ターゲット：${userProfile.targetUniversity}】\n${userProfile.targetUniversity}の入試傾向を反映させてください。単純な知識問題ではなく、資料読み取りや思考力を問う問題を優先してください。`;
+        }
+        if (userProfile.major) {
+           const majorText = userProfile.major === 'arts' ? '文系' : '理系';
+           prompt += `\n\n【生徒属性：${majorText}】\n${majorText}の生徒にとって重要となるポイント（頻出事項や差がつくポイント）を重点的に出題してください。`;
+        }
+      } else {
+        prompt += `\n大学入学共通テストレベルの良問を作成してください。`;
+      }
+      
+      prompt += `\n\n【必須要件】\n・誤字脱字がないか厳重にチェックすること。\n・解説は「なぜその選択肢が正解なのか」「なぜ他の選択肢は間違いなのか」を論理的に説明すること。\n・学習効果の高い問題にすること。`;
+
+      const response = await ai.models.generateContent({
+        model: MODEL_TEXT,
+        contents: prompt,
+        config: {
+          systemInstruction: "あなたは日本トップクラスの予備校講師です。指定されたトピックについて、最新の正確な情報に基づき、学習効果の高い4択問題を生成してください。ハルシネーションを徹底的に排除し、すべての事実関係をファクトチェックした上で出力してください。出力は必ず指定されたJSON形式に従ってください。",
           responseMimeType: "application/json",
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
           responseSchema: {
-            type: SchemaType.ARRAY,
+            type: Type.ARRAY,
             items: {
-              type: SchemaType.OBJECT,
+              type: Type.OBJECT,
               properties: {
-                question: { type: SchemaType.STRING },
-                options: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-                correctAnswerIndex: { type: SchemaType.NUMBER },
-                explanation: { type: SchemaType.STRING }
+                question: { type: Type.STRING, description: "The test question text, ensure high quality and no typos" },
+                options: { 
+                  type: Type.ARRAY, 
+                  items: { type: Type.STRING },
+                  description: "An array of 4 possible answers"
+                },
+                correctAnswerIndex: { type: Type.INTEGER, description: "The index (0-3) of the correct answer" },
+                explanation: { type: Type.STRING, description: "Detailed, high-quality explanation. Explain specifically why the answer is correct." }
               },
               required: ["question", "options", "correctAnswerIndex", "explanation"]
             }
@@ -168,13 +169,22 @@ export const generateTestQuestions = async (topic: string, userProfile?: UserPro
         }
       });
 
-      const text = result.response.text();
-      return JSON.parse(text) as TestQuestion[];
+      if (response.text) {
+        const parsed = JSON.parse(response.text);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed as TestQuestion[];
+        }
+      }
+      throw new Error("Empty or invalid response from AI");
     } catch (error) {
-      markAsBroken();
+      console.error(`Attempt ${attempt + 1} failed:`, error);
       lastError = error;
-      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+      if (attempt < maxRetries) {
+        // Wait a bit before retrying
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
     }
   }
-  throw lastError;
+  
+  throw lastError || new Error("Failed to generate test data after multiple attempts");
 };
